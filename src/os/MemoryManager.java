@@ -47,12 +47,11 @@ public class MemoryManager {
     }
 
     void allocateMemory() {
-        for (int i = 0; i < readyQueue.size(); ) {
-            Process process = readyQueue.get(i);
+        Iterator<Process> iterator = readyQueue.iterator();
+        while (iterator.hasNext()) {
+            Process process = iterator.next();
             if (allocateProcessToMemory(process)) {
-                readyQueue.remove(i);
-            } else {
-                i++;
+                iterator.remove();
             }
         }
     }
@@ -78,26 +77,42 @@ public class MemoryManager {
     }
 
     void executeProcesses() {
-        for (int i = 0; i < activeProcesses.size(); ) {
-            Process process = activeProcesses.get(i);
+        List<Process> processesToRemove = new ArrayList<>();
+        for (Process process : activeProcesses) {
             process.timeInMemory--;
             if (process.timeInMemory == 0) {
                 deallocateProcess(process);
-                activeProcesses.remove(i);
-                allocateJobFromQueue();
-            } else {
-                i++;
+                processesToRemove.add(process);
+            }
+        }
+        activeProcesses.removeAll(processesToRemove);
+        allocateJobFromQueue();
+    }
+
+    void deallocateProcess(Process process) {
+        Iterator<MemoryPartition> iterator = memory.iterator();
+        while (iterator.hasNext()) {
+            MemoryPartition partition = iterator.next();
+            if (!partition.isFree && partition.base == process.base) {
+                iterator.remove();
+                memory.add(new MemoryPartition(process.base, process.size, true));
+                mergeFreePartitions();
+                System.out.println("Deallocated Process " + process.id + " of size " + process.size + "MB from memory.");
+                break;
             }
         }
     }
 
-    void deallocateProcess(Process process) {
-        for (MemoryPartition partition : memory) {
-            if (!partition.isFree && partition.base == process.base) {
-                memory.remove(partition);
-                memory.add(new MemoryPartition(process.base, process.size, true));
-                System.out.println("Deallocated Process " + process.id + " of size " + process.size + "MB from memory.");
-                break;
+    void mergeFreePartitions() {
+        memory.sort(Comparator.comparingInt(p -> p.base));
+        for (int i = 0; i < memory.size() - 1; ) {
+            MemoryPartition current = memory.get(i);
+            MemoryPartition next = memory.get(i + 1);
+            if (current.isFree && next.isFree) {
+                current.size += next.size;
+                memory.remove(next);
+            } else {
+                i++;
             }
         }
     }
@@ -106,25 +121,15 @@ public class MemoryManager {
         boolean allocated;
         do {
             allocated = false;
-            for (int i = 0; i < jobQueue.size(); ) {
-                Process job = jobQueue.get(i);
+            Iterator<Process> iterator = jobQueue.iterator();
+            while (iterator.hasNext()) {
+                Process job = iterator.next();
                 if (allocateProcessToMemory(job)) {
-                    jobQueue.remove(i);
+                    iterator.remove();
                     allocated = true;
-                } else {
-                    i++;
                 }
             }
         } while (allocated);
-    }
-
-    Process findProcessByBase(int base) {
-        for (Process process : activeProcesses) {
-            if (process.base == base) {
-                return process;
-            }
-        }
-        return null;
     }
 
     int countHoles() {
@@ -138,8 +143,8 @@ public class MemoryManager {
     }
 
     void compactMemory() {
-        int occupiedMemory = OS_SIZE;
         List<MemoryPartition> occupiedPartitions = new ArrayList<>();
+        int occupiedMemory = OS_SIZE;
 
         for (MemoryPartition partition : memory) {
             if (!partition.isFree) {
@@ -147,6 +152,7 @@ public class MemoryManager {
                 occupiedMemory += partition.size;
             }
         }
+
         memory.clear();
         memory.add(new MemoryPartition(0, OS_SIZE, false));
 
