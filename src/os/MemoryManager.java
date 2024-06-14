@@ -4,180 +4,203 @@ import java.io.*;
 import java.util.*;
 
 public class MemoryManager {
-    static final int MEMORY_SIZE = 2048;
-    static final int OS_SIZE = 512;
-    static final int AVAILABLE_MEMORY = MEMORY_SIZE - OS_SIZE;
-    static List<Process> readyQueue = new LinkedList<>();
-    static List<Process> jobQueue = new LinkedList<>();
-    static List<MemoryPartition> memory = new ArrayList<>();
-    static List<Process> activeProcesses = new ArrayList<>();
+    private static final int MEMORY_SIZE = 2048;
+    private static final int OS_SIZE = 512;
+    private static final int AVAILABLE_MEMORY = MEMORY_SIZE - OS_SIZE;
+
+    private List<Process> readyQueue = new LinkedList<>();
+    private List<Process> jobQueue = new LinkedList<>();
+    private List<MemoryRegion> memory = Collections.synchronizedList(new ArrayList<>());
+    private List<Process> activeProcesses = Collections.synchronizedList(new ArrayList<>());
 
     public MemoryManager() throws IOException {
         readInputFiles();
         initializeMemory();
     }
 
-    void readInputFiles() throws IOException {
-        BufferedReader readyReader = new BufferedReader(new FileReader("ready.txt"));
-        BufferedReader jobReader = new BufferedReader(new FileReader("job.txt"));
+    private void readInputFiles() throws IOException {
+        try (BufferedReader readyReader = new BufferedReader(new FileReader("ready.txt"));
+             BufferedReader jobReader = new BufferedReader(new FileReader("job.txt"))) {
+            String line;
+            while ((line = readyReader.readLine()) != null) {
+                String[] parts = line.split(" ");
+                int id = Integer.parseInt(parts[0]);
+                int size = Integer.parseInt(parts[1]);
+                int timeInMemory = Integer.parseInt(parts[2]);
+                readyQueue.add(new Process(id, size, timeInMemory));
+            }
 
-        String line;
-        while ((line = readyReader.readLine()) != null) {
-            String[] parts = line.split(" ");
-            int id = Integer.parseInt(parts[0]);
-            int size = Integer.parseInt(parts[1]);
-            int timeInMemory = Integer.parseInt(parts[2]);
-            readyQueue.add(new Process(id, size, timeInMemory));
-        }
-        readyReader.close();
-
-        while ((line = jobReader.readLine()) != null) {
-            String[] parts = line.split(" ");
-            int id = Integer.parseInt(parts[0]);
-            int size = Integer.parseInt(parts[1]);
-            int timeInMemory = Integer.parseInt(parts[2]);
-            jobQueue.add(new Process(id, size, timeInMemory));
-        }
-        jobReader.close();
-    }
-
-    void initializeMemory() {
-        memory.add(new MemoryPartition(0, OS_SIZE, false));
-        memory.add(new MemoryPartition(OS_SIZE, AVAILABLE_MEMORY, true));
-    }
-
-    void allocateMemory() {
-        Iterator<Process> iterator = readyQueue.iterator();
-        while (iterator.hasNext()) {
-            Process process = iterator.next();
-            if (allocateProcessToMemory(process)) {
-                iterator.remove();
+            while ((line = jobReader.readLine()) != null) {
+                String[] parts = line.split(" ");
+                int id = Integer.parseInt(parts[0]);
+                int size = Integer.parseInt(parts[1]);
+                int timeInMemory = Integer.parseInt(parts[2]);
+                jobQueue.add(new Process(id, size, timeInMemory));
             }
         }
     }
 
-    boolean allocateProcessToMemory(Process process) {
-        for (MemoryPartition partition : memory) {
-            if (partition.isFree && partition.size >= process.size) {
-                process.base = partition.base;
-                process.limit = process.base + process.size;
-                partition.base += process.size;
-                partition.size -= process.size;
-                if (partition.size == 0) {
-                    memory.remove(partition);
+    private void initializeMemory() {
+        synchronized (memory) {
+            memory.add(new MemoryRegion(0, OS_SIZE, false));
+            memory.add(new MemoryRegion(OS_SIZE, AVAILABLE_MEMORY, true));
+        }
+    }
+
+    public void allocateMemory() {
+        synchronized (memory) {
+            Iterator<Process> iterator = readyQueue.iterator();
+            while (iterator.hasNext()) {
+                Process process = iterator.next();
+                if (allocateProcessToMemory(process)) {
+                    iterator.remove();
                 }
-                memory.add(new MemoryPartition(process.base, process.size, false));
-                activeProcesses.add(process);
-                System.out.println("Allocated Process " + process.id + " of size " + process.size + "MB to memory.");
-                return true;
             }
         }
-        System.out.println("Failed to allocate Process " + process.id + " of size " + process.size + "MB to memory.");
+    }
+
+    private boolean allocateProcessToMemory(Process process) {
+        synchronized (memory) {
+            for (MemoryRegion partition : memory) {
+                if (partition.isFree() && partition.getSize() >= process.getSize()) {
+                    process.setBase(partition.getBase());
+                    process.setLimit(partition.getBase() + process.getSize());
+                    partition.setBase(partition.getBase() + process.getSize());
+                    partition.setSize(partition.getSize() - process.getSize());
+                    if (partition.getSize() == 0) {
+                        memory.remove(partition);
+                    }
+                    memory.add(new MemoryRegion(process, process.getBase(), process.getSize(), false));
+                    activeProcesses.add(process);
+                    System.out.println("Allocated Process " + process.getId() + " of size " + process.getSize() + "MB to memory.");
+                    return true;
+                }
+            }
+        }
+        System.out.println("Failed to allocate Process " + process.getId() + " of size " + process.getSize() + "MB to memory.");
         return false;
     }
 
-    void executeProcesses() {
+    public void executeProcesses() {
         List<Process> processesToRemove = new ArrayList<>();
-        for (Process process : activeProcesses) {
-            process.timeInMemory--;
-            if (process.timeInMemory == 0) {
-                deallocateProcess(process);
-                processesToRemove.add(process);
+        synchronized (activeProcesses) {
+            for (Process process : activeProcesses) {
+                process.setTimeInMemory(process.getTimeInMemory() - 1);
+                if (process.getTimeInMemory() == 0) {
+                    deallocateProcess(process);
+                    processesToRemove.add(process);
+                }
             }
+            activeProcesses.removeAll(processesToRemove);
         }
-        activeProcesses.removeAll(processesToRemove);
         allocateJobFromQueue();
     }
 
-    void deallocateProcess(Process process) {
-        Iterator<MemoryPartition> iterator = memory.iterator();
-        while (iterator.hasNext()) {
-            MemoryPartition partition = iterator.next();
-            if (!partition.isFree && partition.base == process.base) {
-                iterator.remove();
-                memory.add(new MemoryPartition(process.base, process.size, true));
-                mergeFreePartitions();
-                System.out.println("Deallocated Process " + process.id + " of size " + process.size + "MB from memory.");
-                break;
+    private void deallocateProcess(Process process) {
+        synchronized (memory) {
+            Iterator<MemoryRegion> iterator = memory.iterator();
+            while (iterator.hasNext()) {
+                MemoryRegion partition = iterator.next();
+                if (!partition.isFree() && partition.getBase() == process.getBase()) {
+                    iterator.remove();
+                    memory.add(new MemoryRegion(process, process.getBase(), process.getSize(), true));
+                    mergeFreePartitions();
+                    System.out.println("Deallocated Process " + process.getId() + " of size " + process.getSize() + "MB from memory.");
+                    break;
+                }
             }
         }
     }
 
-    void mergeFreePartitions() {
-        memory.sort(Comparator.comparingInt(p -> p.base));
-        for (int i = 0; i < memory.size() - 1; ) {
-            MemoryPartition current = memory.get(i);
-            MemoryPartition next = memory.get(i + 1);
-            if (current.isFree && next.isFree) {
-                current.size += next.size;
-                memory.remove(next);
-            } else {
-                i++;
+    private void mergeFreePartitions() {
+        synchronized (memory) {
+            memory.sort(Comparator.comparingInt(MemoryRegion::getBase));
+            for (int i = 0; i < memory.size() - 1; ) {
+                MemoryRegion current = memory.get(i);
+                MemoryRegion next = memory.get(i + 1);
+                if (current.isFree() && next.isFree()) {
+                    current.setSize(current.getSize() + next.getSize());
+                    memory.remove(next);
+                } else {
+                    i++;
+                }
             }
         }
     }
 
-    void allocateJobFromQueue() {
+    private void allocateJobFromQueue() {
         boolean allocated;
         do {
             allocated = false;
-            Iterator<Process> iterator = jobQueue.iterator();
-            while (iterator.hasNext()) {
-                Process job = iterator.next();
-                if (allocateProcessToMemory(job)) {
-                    iterator.remove();
-                    allocated = true;
+            synchronized (memory) {
+                Iterator<Process> iterator = jobQueue.iterator();
+                while (iterator.hasNext()) {
+                    Process job = iterator.next();
+                    if (allocateProcessToMemory(job)) {
+                        iterator.remove();
+                        allocated = true;
+                    }
                 }
             }
         } while (allocated);
     }
 
-    int countHoles() {
+    public int countHoles() {
         int holes = 0;
-        for (MemoryPartition partition : memory) {
-            if (partition.isFree) {
-                holes++;
+        synchronized (memory) {
+            for (MemoryRegion partition : memory) {
+                if (partition.isFree()) {
+                    holes++;
+                }
             }
         }
         return holes;
     }
 
-    void compactMemory() {
-        List<MemoryPartition> occupiedPartitions = new ArrayList<>();
+    public void compactMemory() {
+        List<MemoryRegion> occupiedPartitions = new ArrayList<>();
         int occupiedMemory = OS_SIZE;
 
-        for (MemoryPartition partition : memory) {
-            if (!partition.isFree) {
-                occupiedPartitions.add(partition);
-                occupiedMemory += partition.size;
+        synchronized (memory) {
+            for (MemoryRegion partition : memory) {
+                if (!partition.isFree()) {
+                    occupiedPartitions.add(partition);
+                    occupiedMemory += partition.getSize();
+                }
             }
-        }
 
-        memory.clear();
-        memory.add(new MemoryPartition(0, OS_SIZE, false));
+            memory.clear();
+            memory.add(new MemoryRegion(0, OS_SIZE, false));
 
-        int base = OS_SIZE;
-        for (MemoryPartition partition : occupiedPartitions) {
-            partition.base = base;
-            base += partition.size;
-            memory.add(partition);
+            int base = OS_SIZE;
+            for (MemoryRegion partition : occupiedPartitions) {
+                partition.setBase(base);
+                base += partition.getSize();
+                memory.add(partition);
+            }
+            memory.add(new MemoryRegion(base, MEMORY_SIZE - base, true));
         }
-        memory.add(new MemoryPartition(base, MEMORY_SIZE - base, true));
         System.out.println("Memory compaction performed.");
     }
 
-    String getMemoryStatus() {
+    public String getMemoryStatus() {
         StringBuilder sb = new StringBuilder();
         sb.append("Memory Status:\n");
-        for (MemoryPartition partition : memory) {
-            sb.append("Base: ").append(partition.base)
-                    .append(", Size: ").append(partition.size)
-                    .append(", Free: ").append(partition.isFree).append("\n");
+        synchronized (memory) {
+            for (MemoryRegion partition : memory) {
+                sb.append("Base: ").append(partition.getBase())
+                        .append(", Size: ").append(partition.getSize())
+                        .append(", Free: ").append(partition.isFree()).append("\n");
+            }
         }
         return sb.toString();
     }
 
-    boolean isCompleted() {
+    public List<MemoryRegion> getMemory() {
+        return memory;
+    }
+
+    public boolean isCompleted() {
         return readyQueue.isEmpty() && jobQueue.isEmpty() && activeProcesses.isEmpty();
     }
 }
