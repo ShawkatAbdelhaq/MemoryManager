@@ -5,9 +5,10 @@ import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.TextArea;
 import javafx.scene.layout.VBox;
-import javafx.scene.shape.Rectangle;
 import javafx.stage.Stage;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Text;
@@ -20,6 +21,9 @@ public class Main extends Application {
     private static MemoryManager memoryManager;
     private static TextArea memoryDisplay;
     private static VBox memoryRegions;
+    private static Canvas memoryCanvas;
+    private static final int CANVAS_WIDTH = 400;
+    private static final int CANVAS_HEIGHT = 600;
 
     @Override
     public void start(Stage primaryStage) throws IOException {
@@ -33,10 +37,13 @@ public class Main extends Application {
         memoryDisplay = new TextArea();
         memoryDisplay.setEditable(false);
 
-        Scene scene = new Scene(memoryRegions, 500, 500);
-        memoryRegions.setPadding(new Insets(40));
+        memoryCanvas = new Canvas(CANVAS_WIDTH, CANVAS_HEIGHT);
 
-        stage.setTitle("Memory Management");
+        Scene scene = new Scene(memoryRegions, 500, 700);
+        memoryRegions.setPadding(new Insets(20));
+        memoryRegions.getChildren().addAll(memoryCanvas, memoryDisplay);
+
+        stage.setTitle("Memory Management Visualization");
         stage.setScene(scene);
         stage.show();
 
@@ -55,6 +62,7 @@ public class Main extends Application {
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 e.printStackTrace();
             }
         }
@@ -67,23 +75,32 @@ public class Main extends Application {
     private void displayMemoryRegions() {
         Platform.runLater(() -> {
             synchronized (memoryManager.getMemory()) {
-                memoryRegions.getChildren().clear();
-                List<MemoryRegion> memory = memoryManager.getMemory();
-                for (MemoryRegion region : memory) {
-                    VBox regionBox = new VBox(5);
-                    regionBox.setAlignment(Pos.CENTER);
-
-                    Rectangle rect = new Rectangle(100, 50);
-                    rect.setFill(region.isFree() ? Color.LIGHTGRAY : Color.PINK);
-
-                    Text text = new Text(region.toString());
-
-                    regionBox.getChildren().addAll(rect, text);
-                    memoryRegions.getChildren().add(regionBox);
-                }
+                drawMemory();
             }
         });
     }
+
+    private void drawMemory() {
+        GraphicsContext gc = memoryCanvas.getGraphicsContext2D();
+        gc.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+        List<MemoryRegion> memory = memoryManager.getMemory();
+        double totalMemory = MemoryManager.MEMORY_SIZE;
+
+        double yOffset = 10;
+        for (MemoryRegion region : memory) {
+            double height = (region.getSize() / totalMemory) * (CANVAS_HEIGHT - 20);
+            gc.setFill(region.isFree() ? Color.LIGHTGRAY : Color.PINK);
+            gc.fillRect(10, yOffset, CANVAS_WIDTH - 20, height);
+
+            gc.setFill(Color.BLACK);
+            gc.strokeRect(10, yOffset, CANVAS_WIDTH - 20, height);
+            gc.fillText(region.toString(), 15, yOffset + 15);
+
+            yOffset += height + 5;
+        }
+    }
+
 
     public static void main(String[] args) {
         launch();
